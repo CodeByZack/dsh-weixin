@@ -55,7 +55,8 @@
     "esbuild": "^0.28.2"
   },
   "scripts": {
-    "verify:imports": "node scripts/verify-imports.mjs"
+    "verify:imports": "node scripts/verify-imports.mjs",
+    "build:client": "node plugin-src/client/build.mjs"
   },
   "publishConfig": {
     "access": "public"
