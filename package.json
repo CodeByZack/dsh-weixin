@@ -1,6 +1,6 @@
 {
   "name": "@zackdk/dsh-weixin",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "DeepSeek Harness ↔ 微信接入（fork of @xmanrui/dsh-im, 只保留 Weixin 通道，独立维护）",
   "type": "module",
   "license": "MIT",
@@ -44,14 +44,9 @@
     "src/",
     "plugin-src/",
     "lib/",
-    "bin/",
     "README.md",
-    "cordis.patch.yml",
-    "LICENSE"
+    "cordis.patch.yml"
   ],
-  "bin": {
-    "dsh-weixin": "./bin/dsh-weixin.mjs"
-  },
   "dependencies": {
     "qrcode": "^1.5.4"
   },
@@ -60,5 +55,8 @@
   },
   "scripts": {
     "verify:imports": "node scripts/verify-imports.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
