@@ -1,0 +1,129 @@
+# Publish @zackdk/dsh-weixin to npm.
+#
+# Two ways to publish, both gated on the validate job passing:
+#   1. Publish a GitHub Release from tag v<X.Y.Z>   (primary path)
+#   2. Run this workflow manually with publish=true (recovery / forced)
+# PRs and pushes to main only validate - they never publish.
+#
+# Auth - this file needs no edits to switch between the two modes, because
+# both reach npm through the same `npm publish` command:
+#
+#   A. npm trusted publishing (recommended, no token to manage).
+#      One-time setup on npmjs.com for this package:
+#        package settings -> Trusted publishing -> add publisher
+#          provider: GitHub
+#          owner/repo: CodeByZack/dsh-weixin
+#          workflow filename: npm-publish.yml
+#      At publish time the npm CLI exchanges a GitHub OIDC token - no secret
+#      exists in the repo. Requires the id-token: write permission below.
+#      Note the workflow FILENAME is part of the registration, so renaming
+#      this file requires re-registering the publisher.
+#
+#   B. npm automation token fallback.
+#      npmjs.com -> Access tokens -> create automation token, then store it as
+#      the repo secret NPM_TOKEN. npm publish uses NODE_AUTH_TOKEN below.
+#
+# After publishing, consumers install with:
+#   dsh plugin --profile web add @zackdk/dsh-weixin
+# The dsh.profile.bundles list is reconciled automatically because package.json
+# declares dsh.bundle.patch - no profile file edits needed.
+
+name: npm publish
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Actually publish to npm (false = validate only)
+        type: boolean
+        default: false
+      npm_tag:
+        description: dist-tag to publish under (leave empty for latest)
+        type: string
+        default: ''
+
+# Two concurrent publishes race on the same version and the second one fails.
+# Keep both lanes serialized and never cancel a publish in flight.
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate the package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify internal import paths
+        run: npm run verify:imports
+
+      - name: Pack the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(npm pack --silent | tail -n1)"
+          mkdir -p .audit
+          tar -xzf "$TARBALL" -C .audit
+          echo "$TARBALL" > .audit/tarball.txt
+          ls -la .audit/package | head -n 20
+
+      - name: Audit the packed manifest
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ github.event.release && github.event.release.tag_name || '' }}
+        run: |
+          set -euo pipefail
+          node scripts/audit-tarball.mjs .audit/package "$(cat .audit/tarball.txt)" "$EXPECTED_VERSION"
+
+  publish:
+    name: publish to npm
+    needs: validate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish == true)
+    permissions:
+      contents: read
+      id-token: write  # requested by npm trusted publishing (OIDC) and by --provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Use the latest npm (trusted publishing / provenance are version-gated)
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check the release tag matches the package version
+        shell: bash
+        env:
+          TAG: ${{ github.event.release && github.event.release.tag_name || '' }}
+        run: node scripts/check-version.mjs "$TAG"
+
+      - name: Publish
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.npm_tag || 'latest' }}
+        run: npm publish --access public --provenance --tag "$NPM_TAG"

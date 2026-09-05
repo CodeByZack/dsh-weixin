@@ -56,7 +56,9 @@
   },
   "scripts": {
     "verify:imports": "node scripts/verify-imports.mjs",
-    "build:client": "node plugin-src/client/build.mjs"
+    "build:client": "node plugin-src/client/build.mjs",
+    "verify:tarball": "mkdir -p .audit && npm pack --silent | tail -n 1 > .audit/tarball.txt && tar -xzf $(cat .audit/tarball.txt) -C .audit && node scripts/audit-tarball.mjs .audit/package $(cat .audit/tarball.txt)",
+    "prepublishOnly": "npm run verify:imports && npm run verify:tarball"
   },
   "publishConfig": {
     "access": "public"
