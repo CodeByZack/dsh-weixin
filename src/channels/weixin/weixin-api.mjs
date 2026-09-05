@@ -20,6 +20,8 @@ const ILINK_CLIENT_VERSION = (2 << 16) | (4 << 8) | 6;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const WEIXIN_CDN_UPLOAD_RETRIES = 3;
+const WEIXIN_SEND_RETRIES = 3;
+const WEIXIN_SEND_RETRY_DELAY_MS = 1_500;
 const LOGIN_STATUSES = new Set([
   'wait',
   'scaned',
@@ -640,30 +642,53 @@ export function createWeixinApi({ fetchImpl = fetch } = {}) {
       const recipient = nonEmptyString(toUserId);
       const content = nonEmptyString(text);
       if (!recipient || !content) throw new TypeError('toUserId and text are required');
-      const response = await requestJson(fetchImpl, {
-        method: 'POST',
-        baseUrl,
-        endpoint: 'ilink/bot/sendmessage',
-        token,
-        signal,
-        body: {
-          msg: {
-            from_user_id: '',
-            to_user_id: recipient,
-            client_id: `dsh-weixin-${randomUUID()}`,
-            message_type: 2,
-            message_state: 2,
-            item_list: [{ type: 1, text_item: { text: content } }],
-            ...(nonEmptyString(contextToken) ? { context_token: contextToken.trim() } : {}),
-            ...(nonEmptyString(runId) ? { run_id: runId.trim() } : {}),
-          },
-          base_info: baseInfo(),
-        },
-      });
-      if (response?.ret !== undefined && response.ret !== 0) {
-        throw new WeixinApiError('send-rejected', '微信服务拒绝了回复消息。');
+      let lastError;
+      for (let attempt = 1; attempt <= WEIXIN_SEND_RETRIES; attempt += 1) {
+        signal?.throwIfAborted();
+        try {
+          const response = await requestJson(fetchImpl, {
+            method: 'POST',
+            baseUrl,
+            endpoint: 'ilink/bot/sendmessage',
+            token,
+            signal,
+            body: {
+              msg: {
+                from_user_id: '',
+                to_user_id: recipient,
+                client_id: `dsh-weixin-${randomUUID()}`, // 每次重试都换 client_id，避免被按 id 去重吞掉
+                message_type: 2,
+                message_state: 2,
+                item_list: [{ type: 1, text_item: { text: content } }],
+                ...(nonEmptyString(contextToken) ? { context_token: contextToken.trim() } : {}),
+                ...(nonEmptyString(runId) ? { run_id: runId.trim() } : {}),
+              },
+              base_info: baseInfo(),
+            },
+          });
+          if (response?.ret === undefined || response.ret === 0) return true;
+          // ret=-2 是 iLink 的复用错误码：限流 / 瞬时失败 / 消息过长（hermes 实测、官方 issue #284/#202）。
+          // 带退避重试；其余 ret 码（鉴权、会话失效等）立即失败不重试。
+          lastError = new WeixinApiError(
+            'send-rejected',
+            `微信服务拒绝了回复消息（ret=${response.ret}）。`,
+            { providerCode: response.ret },
+          );
+        } catch (error) {
+          if (signal?.aborted) throw abortError(signal);
+          lastError = error;
+        }
+        // 快速失败：业务性拒绝（ret 非 -2）或 HTTP 4xx；其余（ret=-2 / 5xx / 网络 / 解析）重试
+        if (lastError instanceof WeixinApiError && (
+          (lastError.code === 'send-rejected' && lastError.providerCode !== -2)
+          || (Number.isInteger(lastError.status) && lastError.status < 500)
+        )) throw lastError;
+        if (attempt < WEIXIN_SEND_RETRIES) {
+          await new Promise((resolve) => setTimeout(resolve, WEIXIN_SEND_RETRY_DELAY_MS * attempt));
+          signal?.throwIfAborted();
+        }
       }
-      return true;
+      throw lastError;
     },
 
     async sendFile(request) {
