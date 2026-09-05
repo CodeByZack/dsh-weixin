@@ -21,43 +21,36 @@
 # `npm view` and skipped - without this, a republish 403 would make a partially
 # failed run unrecoverable. An existing release is left exactly as it is.
 #
-# Auth + mode - both auth paths reach npm through the same command, so switching
-# between them needs no workflow edits:
+# Auth + mode - DIRECT publish through npm trusted publishing (OIDC). No secret
+# exists in this repo:
 #
-#   npm stage publish .        <- staged, the default and recommended mode
+#   npm publish --access public --provenance --tag <tag>
 #
-#   A. npm trusted publishing (recommended, no secret to manage).
-#      One-time setup on npmjs.com for this package:
-#        package settings -> Trusted publishing -> add publisher
-#          provider: GitHub
-#          owner/repo: CodeByZack/dsh-weixin
-#          workflow filename: npm-publish.yml
-#      At publish time the npm CLI exchanges a GitHub OIDC token - no secret
-#      exists in the repo. Requires the id-token: write permission below.
-#      Note the workflow FILENAME is part of the registration, so renaming
-#      this file requires re-registering the publisher.
+# One-time setup on npmjs.com for this package:
+#   package settings -> Trusted publishing -> add publisher
+#     provider: GitHub
+#     owner/repo: CodeByZack/dsh-weixin
+#     workflow filename: npm-publish.yml
+#     Allowed actions: must allow DIRECT publish. Every trusted-publisher config
+#       can stage by default while direct is opt-in, so a stage-only config
+#       REFUSES plain `npm publish`. Enabling direct is the required prerequisite
+#       for this workflow - the job fails loudly if it is not set.
 #
-#      NOT AVAILABLE FOR THE FIRST PUBLISH: npm cannot attach a trusted publisher
-#      to a package that does not exist yet. v0.1.0 therefore had to go out with a
-#      token; only afterwards could the OIDC publisher be registered.
+# At publish time the npm CLI exchanges a GitHub OIDC token minted for this job.
+# Requires id-token: write below, and NODE_AUTH_TOKEN must be ABSENT - a present
+# but empty value is what makes people believe a token is configured. The workflow
+# FILENAME is part of the registration, so renaming this file requires
+# re-registering the publisher.
 #
-#   B. npm token.
-#      npmjs.com -> Access tokens -> create a GRANULAR token with package access,
-#      and the token must have "Bypass 2FA" enabled. Store it as the repo secret
-#      NPM_TOKEN; npm uses NODE_AUTH_TOKEN below.
+# Trade-off, chosen deliberately: direct publish means a compromised CI pipeline
+# can push a version straight to the registry with no human in the loop. npm
+# defaults trusted publishers to stage-only for exactly that reason - a staged
+# tarball needs a maintainer with a 2FA challenge before it becomes installable.
+# This repo takes direct for simplicity.
 #
-#      A classic token is refused. Run 5 died on exactly this:
-#        npm error 403 Forbidden - Two-factor authentication or granular access
-#        token with bypass 2fa enabled is required to publish packages.
-#      The other way to get the first version out is a local `npm login` with
-#      interactive 2FA followed by a publish.
-#
-#   Staged means a human approves: the tarball lands in a stage queue and a
-#   maintainer with a 2FA challenge approves it before it becomes installable.
-#     npm stage list             # find the stage id
-#     npm stage approve <id>
-#   Needs npm CLI 11.15.0+ - the job installs npm@latest. Publish-time malware
-#   scanning gates the approve button until the scan finishes.
+# npm refused a trusted publisher for v0.1.0, because a package must exist before
+# a publisher can be attached. That first version went out with a token, which has
+# since been deleted.
 #
 # After publishing, consumers install with:
 #   dsh plugin --profile web add @zackdk/dsh-weixin
@@ -184,31 +177,19 @@ jobs:
       - name: Publish
         shell: bash
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # No NODE_AUTH_TOKEN on purpose - publishing goes through OIDC trusted
+          # publishing, which npm requires to find NO token.
           NPM_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.npm_tag || 'latest' }}
         run: |
           set -euo pipefail
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
-          # Two idempotency checks, because a staged version is invisible to
-          # `npm view` until a maintainer approves it and is not published yet
-          # either. Re-running without both would re-stage or die with a 403,
-          # leaving a half-finished run unrecoverable.
+          # Skip rather than fail: npm returns 403 for a republished version and
+          # would otherwise leave a half-finished run unrecoverable.
           if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
             echo "::notice::$NAME@$VERSION is already published - skipping so this run stays re-runnable"
           else
-            STAGED=$(npm stage list "$NAME@$VERSION" --json 2>/dev/null || true)
-            if printf '%s' "$STAGED" | grep -qF "$NAME"; then
-              echo "::notice::$NAME@$VERSION is already in the stage queue - a maintainer must approve it"
-            else
-              # Stage rather than publish: npm pushes staged publishing, every
-              # trusted-publisher config can stage by default, and direct publish
-              # is opt-in per config and explicitly discouraged. A stage-only
-              # config REJECTS plain `npm publish`. The tarball then lands in a
-              # stage queue and a maintainer with a 2FA challenge approves it
-              # before it becomes installable - npmjs.com, or `npm stage approve`.
-              npm stage publish . --access public --provenance --tag "$NPM_TAG"
-            fi
+            npm publish --access public --provenance --tag "$NPM_TAG"
           fi
 
       - name: Create the GitHub release

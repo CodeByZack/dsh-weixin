@@ -1,12 +1,12 @@
 {
   "name": "@zackdk/dsh-weixin",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DeepSeek Harness ↔ 微信通道插件，基于腾讯官方 iLink Bot 接口",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/CodeByZack/dsh-weixin"
+    "url": "git+https://github.com/CodeByZack/dsh-weixin.git"
   },
   "author": "zackdk",
   "keywords": [
