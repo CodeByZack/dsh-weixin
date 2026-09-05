@@ -185,28 +185,44 @@ jobs:
 
           # OIDC trusted publishing requires npm to find NO token. actions/setup-node
           # exports NODE_AUTH_TOKEN to every later step as soon as registry-url is set,
-          # and writes an _authToken line into the userconfig. Any token present makes
-          # npm try token auth and never reach for the OIDC token - with a deleted
-          # token that surfaces as a cryptic 404 on the PUT rather than an auth error.
-          # Strip both, then fail loudly if either strip was incomplete.
+          # and writes an _authToken line into its userconfig. Two failure modes, both
+          # seen in this workflow's history:
+          #   - a real token present -> npm uses it and never reaches for OIDC; a
+          #     deleted token then surfaces as a cryptic 404 on the PUT
+          #   - the key deleted but the line left behind -> a present-but-empty
+          #     _authToken still reads as "auth is configured", so npm answers
+          #     ENEEDAUTH without ever trying OIDC
+          # Deleting a config key is not a reliable way out, so hand npm a config that
+          # contains nothing but the registry URL.
           unset NODE_AUTH_TOKEN
-          npm config delete //registry.npmjs.org/:_authToken 2>/dev/null || true
-          if [ -n "$(npm config get //registry.npmjs.org/:_authToken 2>/dev/null || true)" ]; then
-            echo "::error::an npm token is still configured, so OIDC will not be used - remove it from the userconfig or the NODE_AUTH_TOKEN variable"
+          CLEAN_NPMRC=$(mktemp)
+          printf 'registry=https://registry.npmjs.org/\n' > "$CLEAN_NPMRC"
+          export NPM_CONFIG_USERCONFIG="$CLEAN_NPMRC"
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::no OIDC request URL/token in the environment - this job needs 'permissions: id-token: write'"
             exit 1
           fi
-          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
-            echo "::error::no OIDC request token in the environment - this job needs 'permissions: id-token: write'"
-            exit 1
-          fi
-          echo 'no token configured, OIDC request token present - publishing through trusted publishing'
+          echo "npm $(npm --version) on node $(node --version); clean userconfig, no token, OIDC URL + token present"
 
           # Skip rather than fail: npm returns 403 for a republished version and
           # would otherwise leave a half-finished run unrecoverable.
           if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
             echo "::notice::$NAME@$VERSION is already published - skipping so this run stays re-runnable"
+          elif npm publish --access public --provenance --tag "$NPM_TAG"; then
+            echo "published $NAME@$VERSION"
           else
-            npm publish --access public --provenance --tag "$NPM_TAG"
+            rc=$?
+            echo "::error::npm publish failed with exit $rc - dumping diagnostics"
+            echo "--- npm config list ---"
+            npm config list 2>&1 | sed -E 's/(\*_authToken=)[^ ]+//\1<redacted>/' | head -n 25
+            echo "--- userconfig actually in use ---"
+            cat "$NPM_CONFIG_USERCONFIG"
+            echo "--- OIDC env ---"
+            printf 'ACTIONS_ID_TOKEN_REQUEST_URL=%s\nACTIONS_ID_TOKEN_REQUEST_TOKEN=%s\nGITHUB_ACTIONS=%s\n' \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL:+set}" "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+set}" "${GITHUB_ACTIONS:-unset}"
+            echo "--- npm debug log tail (tokens redacted) ---"
+            tail -n 50 /home/runner/.npm/_logs/*-debug-0.log 2>/dev/null | sed -E 's/(npm_[A-Za-z0-9_-]+)/<redacted-token>/g' | tail -n 30
+            exit "$rc"
           fi
 
       - name: Create the GitHub release
