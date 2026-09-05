@@ -208,21 +208,31 @@ jobs:
           # would otherwise leave a half-finished run unrecoverable.
           if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
             echo "::notice::$NAME@$VERSION is already published - skipping so this run stays re-runnable"
-          elif npm publish --access public --provenance --tag "$NPM_TAG"; then
-            echo "published $NAME@$VERSION"
           else
+            # --loglevel verbose is not decoration here. lib/utils/oidc.js fetches
+            # the GitHub ID token and exchanges it at
+            #   POST /-/npm/v1/oidc/token/exchange/package/<pkg>
+            # and EVERY way that can fail - bad permissions, workflow filename
+            # mismatch, a trusted-publisher config that is stage-only - it only
+            # records at verbose before returning undefined. lib/commands/publish.js
+            # then finds no credentials and throws
+            #   npm error need auth This command requires you to be logged in
+            # At the default loglevel nothing says why the exchange failed, so the
+            # release fails forever for an unnameable reason. The exchange error
+            # body is the only place that names it.
+            set +e
+            npm publish --access public --provenance --tag "$NPM_TAG" --loglevel verbose >npm-publish.out 2>&1
             rc=$?
-            echo "::error::npm publish failed with exit $rc - dumping diagnostics"
-            echo "--- npm config list ---"
-            npm config list 2>&1 | sed -E 's/(\*_authToken=)[^ ]+//\1<redacted>/' | head -n 25
-            echo "--- userconfig actually in use ---"
-            cat "$NPM_CONFIG_USERCONFIG"
-            echo "--- OIDC env ---"
-            printf 'ACTIONS_ID_TOKEN_REQUEST_URL=%s\nACTIONS_ID_TOKEN_REQUEST_TOKEN=%s\nGITHUB_ACTIONS=%s\n' \
-              "${ACTIONS_ID_TOKEN_REQUEST_URL:+set}" "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+set}" "${GITHUB_ACTIONS:-unset}"
-            echo "--- npm debug log tail (tokens redacted) ---"
-            tail -n 50 /home/runner/.npm/_logs/*-debug-0.log 2>/dev/null | sed -E 's/(npm_[A-Za-z0-9_-]+)/<redacted-token>/g' | tail -n 30
-            exit "$rc"
+            set -e
+            grep -vE '^npm (verbose|silly) (http|fetch)' npm-publish.out | tail -n 50 || true
+            if [ "$rc" -eq 0 ]; then
+              echo "published $NAME@$VERSION"
+            else
+              echo "::error::npm publish failed with exit $rc"
+              echo "--- oidc exchange result: the only place the real cause is printed ---"
+              grep -iE 'oidc|exchange|ENEEDAUTH|need auth|error code|error 4|error 3' npm-publish.out | tail -n 40 || true
+              exit "$rc"
+            fi
           fi
 
       - name: Create the GitHub release
