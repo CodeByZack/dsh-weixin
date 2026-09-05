@@ -177,13 +177,30 @@ jobs:
       - name: Publish
         shell: bash
         env:
-          # No NODE_AUTH_TOKEN on purpose - publishing goes through OIDC trusted
-          # publishing, which npm requires to find NO token.
           NPM_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.npm_tag || 'latest' }}
         run: |
           set -euo pipefail
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
+
+          # OIDC trusted publishing requires npm to find NO token. actions/setup-node
+          # exports NODE_AUTH_TOKEN to every later step as soon as registry-url is set,
+          # and writes an _authToken line into the userconfig. Any token present makes
+          # npm try token auth and never reach for the OIDC token - with a deleted
+          # token that surfaces as a cryptic 404 on the PUT rather than an auth error.
+          # Strip both, then fail loudly if either strip was incomplete.
+          unset NODE_AUTH_TOKEN
+          npm config delete //registry.npmjs.org/:_authToken 2>/dev/null || true
+          if [ -n "$(npm config get //registry.npmjs.org/:_authToken 2>/dev/null || true)" ]; then
+            echo "::error::an npm token is still configured, so OIDC will not be used - remove it from the userconfig or the NODE_AUTH_TOKEN variable"
+            exit 1
+          fi
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::no OIDC request token in the environment - this job needs 'permissions: id-token: write'"
+            exit 1
+          fi
+          echo 'no token configured, OIDC request token present - publishing through trusted publishing'
+
           # Skip rather than fail: npm returns 403 for a republished version and
           # would otherwise leave a half-finished run unrecoverable.
           if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
