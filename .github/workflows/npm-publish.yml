@@ -227,10 +227,15 @@ jobs:
             exit 0
           fi
           # Prefer the annotated tag message as the release notes - it is the one
-          # place a curator writes them. Fall back to GitHub's generated notes
-          # for lightweight tags.
-          if [ "$(git cat-file -t "$TAG" 2>/dev/null)" = "tag" ]; then
-            git tag -l --format='%(contents)' "$TAG" > release-notes.md
+          # place a curator writes them. Fetched through the API rather than from
+          # the local clone: actions/checkout rewrites a checked-out tag ref to
+          # point at its commit (checkout log shows `t [tag update] <sha> ->
+          # v0.1.0`), so the local ref is lightweight and the message is gone.
+          # Run 9 hit exactly this and silently fell back to generated notes.
+          REF_TYPE=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" --jq '.object.type')
+          if [ "$REF_TYPE" = tag ]; then
+            TAG_OBJ=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$TAG" --jq '.object.sha')
+            gh api "repos/${GITHUB_REPOSITORY}/git/tags/$TAG_OBJ" --jq '.message' > release-notes.md
           else
             : > release-notes.md
           fi
