@@ -45,7 +45,8 @@
     "plugin-src/",
     "lib/",
     "README.md",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "LICENSE"
   ],
   "dependencies": {
     "qrcode": "^1.5.4"
