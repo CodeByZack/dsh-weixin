@@ -6,3 +6,5 @@ node_modules/
 .audit.txt
 .neg/
 *.tgz
+# built by CI (npm run build:client); see .github/workflows/npm-publish.yml
+lib/client.js

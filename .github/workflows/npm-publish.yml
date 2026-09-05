@@ -105,6 +105,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # lib/client.js is not committed; the published tarball must contain it.
+      - name: Build the client bundle
+        run: npm run build:client
+
       - name: Verify internal import paths
         run: npm run verify:imports
 
@@ -149,6 +153,16 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # lib/client.js is built here rather than committed. DSH plugins install via
+      # `dsh plugin add`, which is a plain npm install with no build step, so the
+      # bundle must exist in the published tarball. Building it in CI means the
+      # tarball always carries the bundle produced from the exact source at the
+      # tagged commit, instead of a locally-built artifact that can drift from
+      # plugin-src/client/ and still pass every audit - the audits only check that
+      # the file exists and is wrapped, never that it is current.
+      - name: Build the client bundle
+        run: npm run build:client
 
       - name: Resolve the tag for this run
         id: tag

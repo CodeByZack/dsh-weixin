@@ -20,6 +20,15 @@ dsh plugin --profile web add @zackdk/dsh-weixin
 
 包内声明了 `dsh.bundle.patch`，`dsh.profile.bundles` 会自动挂好，不需要手改 profile 文件。装完重启 `dsh web`。
 
+## 开发
+
+```bash
+npm ci
+npm run build:client
+```
+
+`lib/client.js` 不提交仓库，由 CI 从源码现场构建后打进 npm tarball（见 `.github/workflows/npm-publish.yml`）。本地直接跑插件前需要先 build 一次。
+
 ## 扫码绑定
 
 1. 打开 DSH web 端的渠道设置页
