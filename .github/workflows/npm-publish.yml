@@ -1,14 +1,30 @@
-# Publish @zackdk/dsh-weixin to npm.
+# Publish @zackdk/dsh-weixin to npm and cut the GitHub Release automatically.
 #
-# Two ways to publish, both gated on the validate job passing:
-#   1. Publish a GitHub Release from tag v<X.Y.Z>   (primary path)
-#   2. Run this workflow manually with publish=true (recovery / forced)
-# PRs and pushes to main only validate - they never publish.
+# Primary path - push a version tag, everything else happens by itself:
+#     git tag -a v0.2.0 -m "v0.2.0 - ..." && git push origin main v0.2.0
+# The workflow then validates, publishes, and creates the release. There is no
+# manual release entry to fill in.
+#
+# Secondary paths, both still supported:
+#   - Create a GitHub Release by hand from an existing tag (if you want to write
+#     the notes in the UI first); the release step then becomes a no-op
+#   - Run this workflow manually with publish=true (recovery / forced publish)
+#
+# Pushes to main and pull requests only validate - they never publish.
+#
+# Tags must look like v<X.Y.Z> and must match package.json version;
+# scripts/check-version.mjs refuses anything else. A published npm version can
+# never be overwritten, so this gate is what keeps a bad tag from needing a
+# second release to fix.
+#
+# Idempotent: a re-run is safe. An already-published version is detected with
+# `npm view` and skipped - without this, a republish 403 would make a partially
+# failed run unrecoverable. An existing release is left exactly as it is.
 #
 # Auth - this file needs no edits to switch between the two modes, because
 # both reach npm through the same `npm publish` command:
 #
-#   A. npm trusted publishing (recommended, no token to manage).
+#   A. npm trusted publishing (recommended, no secret to manage).
 #      One-time setup on npmjs.com for this package:
 #        package settings -> Trusted publishing -> add publisher
 #          provider: GitHub
@@ -34,6 +50,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['v*.*.*']
   release:
     types: [published]
   workflow_dispatch:
@@ -100,12 +117,14 @@ jobs:
     name: publish to npm
     needs: validate
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish == true)
+    if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish == true)
     permissions:
       contents: read
-      id-token: write  # requested by npm trusted publishing (OIDC) and by --provenance
+      id-token: write  # npm trusted publishing (OIDC) and --provenance
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the release step needs the tag object and its message
 
       - uses: actions/setup-node@v4
         with:
@@ -118,15 +137,73 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Check the release tag matches the package version
+      - name: Resolve the tag for this run
+        id: tag
         shell: bash
         env:
-          TAG: ${{ github.event.release && github.event.release.tag_name || '' }}
-        run: node scripts/check-version.mjs "$TAG"
+          EVENT_RELEASE_TAG: ${{ github.event.release && github.event.release.tag_name || '' }}
+          REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ -n "$EVENT_RELEASE_TAG" ]; then
+            TAG="$EVENT_RELEASE_TAG"
+          elif case "$REF" in refs/tags/*) true ;; *) false ;; esac; then
+            TAG="$REF_NAME"
+          else
+            TAG=''
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tag for this run: ${TAG:-<none, manual run>}"
+
+      - name: Check the tag matches the package version
+        if: steps.tag.outputs.tag != ''
+        shell: bash
+        run: node scripts/check-version.mjs "${{ steps.tag.outputs.tag }}"
 
       - name: Publish
         shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.npm_tag || 'latest' }}
-        run: npm publish --access public --provenance --tag "$NPM_TAG"
+        run: |
+          set -euo pipefail
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          # Skip rather than fail: npm returns 403 for a republished version and
+          # would otherwise leave a half-finished run unrecoverable. A 404 means
+          # the version is genuinely new.
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "::notice::$NAME@$VERSION is already on npm - skipping npm publish so this run stays re-runnable"
+          else
+            npm publish --access public --provenance --tag "$NPM_TAG"
+          fi
+
+      - name: Create the GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAG" ]; then
+            echo "::notice::manual run without a tag - skipping release creation"
+            exit 0
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::$TAG already has a release - leaving it as is"
+            exit 0
+          fi
+          # Prefer the annotated tag message as the release notes - it is the one
+          # place a curator writes them. Fall back to GitHub's generated notes
+          # for lightweight tags.
+          if [ "$(git cat-file -t "$TAG" 2>/dev/null)" = "tag" ]; then
+            git tag -l --format='%(contents)' "$TAG" > release-notes.md
+          else
+            : > release-notes.md
+          fi
+          if [ -s release-notes.md ]; then
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file release-notes.md
+          else
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          fi
