@@ -35,9 +35,20 @@
 #      Note the workflow FILENAME is part of the registration, so renaming
 #      this file requires re-registering the publisher.
 #
-#   B. npm automation token fallback.
-#      npmjs.com -> Access tokens -> create automation token, then store it as
-#      the repo secret NPM_TOKEN. npm publish uses NODE_AUTH_TOKEN below.
+#      NOT AVAILABLE FOR THE FIRST PUBLISH: npm cannot attach a trusted publisher
+#      to a package that does not exist yet. v0.1.0 therefore had to go out with a
+#      token; only afterwards could the OIDC publisher be registered.
+#
+#   B. npm token.
+#      npmjs.com -> Access tokens -> create a GRANULAR token with package access,
+#      and the token must have "Bypass 2FA" enabled. Store it as the repo secret
+#      NPM_TOKEN; npm publish uses NODE_AUTH_TOKEN below.
+#
+#      A classic token is refused. Run 5 died on exactly this:
+#        npm error 403 Forbidden - Two-factor authentication or granular access
+#        token with bypass 2fa enabled is required to publish packages.
+#      The other way to get the first version out is a local `npm login` with
+#      interactive 2FA followed by `npm publish`.
 #
 # After publishing, consumers install with:
 #   dsh plugin --profile web add @zackdk/dsh-weixin
