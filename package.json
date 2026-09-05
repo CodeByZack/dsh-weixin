@@ -1,0 +1,64 @@
+{
+  "name": "@zackdk/dsh-weixin",
+  "version": "1.0.0",
+  "description": "DeepSeek Harness ↔ 微信接入（fork of @xmanrui/dsh-im, 只保留 Weixin 通道，独立维护）",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CodeByZack/dsh-weixin"
+  },
+  "author": "zackdk",
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "plugin",
+    "weixin",
+    "wechat",
+    "chatbot"
+  ],
+  "main": "./plugin-src/host/channels/weixin/index.mjs",
+  "exports": {
+    ".": "./plugin-src/host/channels/weixin/index.mjs",
+    "./plugin": "./plugin-src/host/channels/weixin/index.mjs",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "src/",
+    "plugin-src/",
+    "lib/",
+    "bin/",
+    "README.md",
+    "cordis.patch.yml",
+    "LICENSE"
+  ],
+  "bin": {
+    "dsh-weixin": "./bin/dsh-weixin.mjs"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  },
+  "scripts": {
+    "verify:imports": "node scripts/verify-imports.mjs"
+  }
+}

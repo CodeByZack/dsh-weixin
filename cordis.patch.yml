@@ -1,0 +1,3 @@
+- insert:
+    - id: zackdk-dsh-weixin
+      name: '@zackdk/dsh-weixin'
