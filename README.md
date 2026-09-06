@@ -41,8 +41,8 @@ npm run build:client
 | --- | --- |
 | `/new` | 开启一个全新会话 |
 | `/compact` | 压缩当前会话的较早上下文 |
-| `/workspace <绝对路径>` | 切换工作区 |
-| `/workspacelist` | 列出工作区绝对路径 |
+| `/workspace <序号或绝对路径>` | 切换工作区 |
+| `/workspacelist` | 按序号列出工作区绝对路径 |
 | `/sessionlist [工作区序号或绝对路径]` | 列出会话 ID 和标题 |
 | `/session <Session ID 或工作区序号>` | 将当前聊天绑定到指定会话 |
 | `/models` | 按序号列出所有可用模型 |

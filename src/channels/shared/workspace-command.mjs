@@ -142,7 +142,7 @@ async function runWorkspaceListCommand(match, harness) {
         `${index + 1}. ${workspace}${workspace === current ? t('（当前）') : ''}`
       )),
       '',
-      t('切换用法：/workspace 工作区绝对路径'),
+      t('切换用法：/workspace 工作区序号或绝对路径'),
       t('查看会话：/sessionlist 工作区序号或绝对路径'),
     ];
     const message = lines.join('\n');
@@ -363,12 +363,34 @@ export async function runWorkspaceCommand(text, harness, conversationKey) {
   if (listMatch) return runWorkspaceListCommand(listMatch, harness);
   const match = WORKSPACE_COMMAND.exec(command);
   if (!match) return null;
-  const workspace = match[1]?.trim();
-  if (!workspace) {
-    return commandResult(t('用法：/workspace 工作区绝对路径'));
+  const selector = match[1]?.trim();
+  if (!selector) {
+    return commandResult(t('用法：/workspace 工作区序号或绝对路径'));
   }
   if (typeof harness?.switchWorkspace !== 'function') {
     return commandResult(t('当前机器人暂不支持切换工作区。'));
+  }
+  let workspace;
+  if (/^\d+$/u.test(selector)) {
+    // 序号模式：把 /workspace N 解析成 /workspacelist 列表中的第 N 个工作区
+    if (typeof harness?.listWorkspaces !== 'function') {
+      return commandResult(t('当前机器人暂不支持按序号切换工作区。'));
+    }
+    try {
+      const { paths } = await workspacePathSnapshot(harness);
+      const position = Number(selector);
+      if (!Number.isSafeInteger(position) || position < 1 || position > paths.length) {
+        return commandResult(t('工作区序号不存在，请先执行 /workspacelist。'));
+      }
+      workspace = paths[position - 1];
+    } catch (error) {
+      if (error?.code === 'workspace-bot-not-found') {
+        return commandResult(t('机器人正在移除或已重新接入，无法切换原会话的工作区。'));
+      }
+      return commandResult(t('暂时无法获取工作区列表，请稍后重试。'));
+    }
+  } else {
+    workspace = selector;
   }
   try {
     const current = await harness.switchWorkspace(workspace);
@@ -376,7 +398,7 @@ export async function runWorkspaceCommand(text, harness, conversationKey) {
   } catch (error) {
     if (['workspace-not-absolute', 'workspace-not-found', 'workspace-not-directory'].includes(error?.code)) {
       return commandResult(t(`{message}
-用法：/workspace 工作区绝对路径`, { message: error.message }));
+用法：/workspace 工作区序号或绝对路径`, { message: error.message }));
     }
     if (error?.code === 'workspace-bot-not-found') {
       return commandResult(t('机器人正在移除或已重新接入，无法切换原会话的工作区。'));
