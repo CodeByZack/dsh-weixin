@@ -41,7 +41,7 @@ export function IMSettingsTab({
       h('span', { className: 'dim-githubAction' },
         h('a', {
           className: 'dim-githubLink',
-          href: 'https://github.com/zackdk/dsh-weixin',
+          href: 'https://github.com/CodeByZack/dsh-weixin',
           target: '_blank',
           rel: 'noopener noreferrer',
           'aria-label': 'dsh-weixin GitHub',
