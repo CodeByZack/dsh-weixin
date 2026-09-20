@@ -86,9 +86,12 @@ export default {
   '正在整理结果…': 'Gathering results…',
   '_正在搜索网络并整理信息…_': '_Searching the web and gathering information…_',
   '_正在使用 {name}…_': '_Using {name}…_',
+  '本轮处理已结束，没有文本回复。': 'This turn finished without a text reply.',
 
   // image-prompt.mjs
   '请分析这张图片。': 'Analyze this image.',
+  '图片超过原图接收上限 {maxMb} MB，请压缩后重试，或在通用设置的附件中调整上限。':
+    'The image exceeds the {maxMb} MB raw-image limit. Compress it and retry, or raise the limit under General settings → Attachments.',
 
   // inbound-file.mjs
   '文件接收失败，请重新发送后再试。': 'File reception failed. Please resend it.',

@@ -6,6 +6,17 @@ const DEFAULT_MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
 
 export const DEFAULT_IMAGE_PROMPT = '请分析这张图片。';
 
+/**
+ * Model-facing guidance appended when the Host refuses image input for the
+ * current model and the same images are re-delivered as workspace files.
+ */
+export const IMAGE_FILE_FALLBACK_PROMPT = '当前会话模型不支持直接接收图片输入。用户发送的图片已作为文件保存到工作区（见下方文件清单）。请使用可用工具分析这些图片文件后回答，例如 run_code 或 pwsh 读取字节、解析元数据、调用图像处理或 OCR 库；不要假设自己能直接看到图片内容。';
+
+export function imageDownloadLimitMessage(maxBytes) {
+  return t('图片超过原图接收上限 {maxMb} MB，请压缩后重试，或在通用设置的附件中调整上限。',
+    { maxMb: Math.round(maxBytes / (1024 * 1024) * 100) / 100 });
+}
+
 export class ImagePromptError extends Error {
   constructor(code, message, userMessage, options = {}) {
     super(message, options);
@@ -86,7 +97,7 @@ export async function fetchImageBuffer(url, {
     throw new ImagePromptError(
       'image-too-large',
       `Image response declares ${declaredLength} bytes; the limit is ${maxBytes}`,
-      t('图片超过 5 MB，请压缩后重试。'),
+      imageDownloadLimitMessage(maxBytes),
     );
   }
 
@@ -101,7 +112,7 @@ export async function fetchImageBuffer(url, {
         throw new ImagePromptError(
           'image-too-large',
           `Image response exceeded ${maxBytes} bytes`,
-          t('图片超过 5 MB，请压缩后重试。'),
+          imageDownloadLimitMessage(maxBytes),
         );
       }
       chunks.push(data);
@@ -114,7 +125,7 @@ export async function fetchImageBuffer(url, {
     throw new ImagePromptError(
       'image-too-large',
       `Image response contains ${data.length} bytes; the limit is ${maxBytes}`,
-      t('图片超过 5 MB，请压缩后重试。'),
+      imageDownloadLimitMessage(maxBytes),
     );
   }
   return data;
@@ -140,7 +151,7 @@ function safeName(value) {
   return name || undefined;
 }
 
-function detectedImageMediaType(data) {
+export function detectedImageMediaType(data) {
   if (data.length >= 8
     && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47
     && data[4] === 0x0d && data[5] === 0x0a && data[6] === 0x1a && data[7] === 0x0a) {
@@ -161,7 +172,7 @@ function detectedImageMediaType(data) {
   return null;
 }
 
-function loadedImage(value) {
+export function loadedImage(value) {
   if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
     return { data: Buffer.from(value) };
   }
@@ -185,12 +196,13 @@ export function hasInboundPrompt(message) {
 
 export async function promptContentForMessage(message, {
   signal,
+  deferImages = false,
   maxImageBytes = DEFAULT_MAX_IMAGE_BYTES,
   maxImages = DEFAULT_MAX_IMAGES,
   maxTotalImageBytes = DEFAULT_MAX_TOTAL_IMAGE_BYTES,
 } = {}) {
   const sources = imageSources(message);
-  if (sources.length > maxImages) {
+  if (!deferImages && sources.length > maxImages) {
     throw new ImagePromptError(
       'too-many-images',
       `Image message contains ${sources.length} images; the limit is ${maxImages}`,
@@ -203,6 +215,8 @@ export async function promptContentForMessage(message, {
   let totalImageBytes = 0;
   if (text) content.push({ type: 'text', text });
   else if (sources.length > 0) content.push({ type: 'text', text: t(DEFAULT_IMAGE_PROMPT) });
+
+  if (deferImages) return content;
 
   for (const [index, source] of sources.entries()) {
     signal?.throwIfAborted();
@@ -298,4 +312,49 @@ export function imagePromptDiagnostic(error) {
 
 export function imagePromptUserMessage(error) {
   return imagePromptDiagnostic(error)?.userMessage ?? null;
+}
+
+const IMAGE_FILE_EXTENSIONS = new Map([
+  ['image/png', '.png'],
+  ['image/jpeg', '.jpg'],
+  ['image/gif', '.gif'],
+  ['image/webp', '.webp'],
+]);
+
+const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp)$/i;
+
+export function imageStorageName(name, mediaType, index) {
+  const extension = IMAGE_FILE_EXTENSIONS.get(mediaType) ?? '.img';
+  const cleaned = safeName(name);
+  if (cleaned && IMAGE_EXTENSION_PATTERN.test(cleaned)) return cleaned;
+  return `${cleaned ?? `image-${index + 1}`}${extension}`;
+}
+
+/**
+ * Convert already-admitted image content blocks into inbound file sources so
+ * the same bytes can reach a non-vision model as workspace files — the path
+ * ordinary uploads such as zip archives already take.
+ */
+export function imageFileSourcesFromContent(content) {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((part) => part?.type === 'image')
+    .map((part, index) => ({
+      name: imageStorageName(part.name, part.mediaType, index),
+      ...(typeof part.mediaType === 'string' && part.mediaType.trim()
+        ? { mediaType: part.mediaType.trim() }
+        : {}),
+      data: Buffer.from(typeof part.data === 'string' ? part.data : '', 'base64'),
+    }));
+}
+
+/** Return the same content with every image block removed. */
+export function contentWithoutImages(content) {
+  return Array.isArray(content) ? content.filter((part) => part?.type !== 'image') : content;
+}
+
+/** Whether an error is the Host rejecting image input for a non-vision model. */
+export function isModelImageRejection(error) {
+  return error?.code === 'attachment-error'
+    && error?.details?.reason === 'MODEL_DOES_NOT_SUPPORT_IMAGES';
 }
