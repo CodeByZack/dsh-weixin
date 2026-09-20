@@ -15,18 +15,11 @@ import {
   observeBotWorkspaceRemovals,
 } from '../../../../src/channels/shared/bot-workspace-store.mjs';
 import { listAgentPresetCatalog } from '../../../../src/channels/shared/agent-preset.mjs';
+import { prepareBotWorkspace } from '../../../../src/channels/shared/default-workspace.mjs';
 import { createConnectionSupervisor } from './connection-supervisor.mjs';
 import { createHarnessCommandExecutor } from '../../harness-command-executor.mjs';
+import { harnessConnection } from '../../harness-connection.mjs';
 import { createHarnessSessionExecutors } from '../../harness-session-coordinator.mjs';
-
-function harnessOrigin(webServer, configured) {
-  if (configured !== undefined) return new URL(configured);
-  const port = webServer?.port;
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error('dsh-weixin requires an initialized DSH webServer port');
-  }
-  return new URL(`http://127.0.0.1:${port}`);
-}
 
 function pluginPaths(config) {
   const dshHome = resolve(config.dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh'));
@@ -56,7 +49,9 @@ export async function createProductionController(ctx, config = {}, internals = {
   const agentPresetCatalog = () => listAgentPresetCatalog(ctx);
   const paths = pluginPaths(config);
   const configStore = await new ConfigStore(paths.config).load();
-  const defaultWorkspace = resolve(config.workspace ?? process.cwd());
+  // 默认工作区不能用 process.cwd()：dsh web 的 cwd 是 "/"，会把机器人工作区设成
+  // 文件系统根目录。与上游一致，落到 $DSH_HOME/im 并确保目录存在。
+  const { defaultWorkspace, ungroupedWorkspace } = await prepareBotWorkspace(config);
   const WorkspaceStore = internals.WorkspaceStore ?? BotWorkspaceStore;
   const workspaces = internals.workspaces
     ?? await new WorkspaceStore(paths.workspaces, { defaultWorkspace }).load();
@@ -86,8 +81,11 @@ export async function createProductionController(ctx, config = {}, internals = {
     fileIngressExecutor: internals.fileIngressExecutor,
   });
   const harness = new Harness({
-    baseUrl: harnessOrigin(ctx.webServer, config.harnessBaseUrl),
+    // 本机 dsh web 默认走进程内适配（apiProxy / modern-harness-api），
+    // 只有显式配置 harnessBaseUrl 时才回退到旧版 HTTP Harness。
+    ...harnessConnection(ctx, config),
     workspace: defaultWorkspace,
+    ungroupedWorkspace,
     autostart: false,
     dshBin: config.dshBin ?? 'dsh',
     ...(commandExecutor ? { commandExecutor } : {}),
