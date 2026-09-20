@@ -11,6 +11,16 @@ import { WorkspaceDirectoryPickerContext } from './workspace-editor.js';
 export const name = 'weixin-settings';
 export const inject = ['slots', 'connection', 'locale', 'workspaces'];
 
+function callWorkspaceDirectoryApi(ctx, method, ...args) {
+  // 新版 DSH 把目录操作放在 uiWorkspace，旧版 Host 仍放在 workspaces。
+  const uiWorkspace = typeof ctx.get === 'function' ? ctx.get('uiWorkspace') : undefined;
+  const service = typeof uiWorkspace?.[method] === 'function' ? uiWorkspace : ctx.workspaces;
+  if (typeof service?.[method] !== 'function') {
+    throw new Error('无法读取目录，请重试。');
+  }
+  return service[method](...args);
+}
+
 const CHANNELS = Object.freeze([
   { id: 'weixin', label: '微信' },
 ]);
@@ -104,8 +114,9 @@ export function apply(ctx) {
   const weixinRpcCall = (endpoint, payload, signal) =>
     ctx.connection.rpc.call(WEIXIN_RPC_CHANNEL, endpoint, payload, signal);
   const workspaceDirectoryPicker = Object.freeze({
-    listDirectory: (path, signal) => ctx.workspaces.listDirectory(path, signal),
-    pickDirectory: () => ctx.workspaces.pickDirectory(),
+    listDirectory: (path, signal) =>
+      callWorkspaceDirectoryApi(ctx, 'listDirectory', path, signal),
+    pickDirectory: () => callWorkspaceDirectoryApi(ctx, 'pickDirectory'),
   });
 
   ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
