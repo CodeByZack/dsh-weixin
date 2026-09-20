@@ -226,13 +226,170 @@ export function createWeixinRpcHandler(controller, { encodeQr = qrDataUrl } = {}
   };
 }
 
-export function installWeixinRpc(ctx, controller, options, authority) {
-  if (!ctx?.connection?.rpc || typeof ctx.connection.rpc.handle !== 'function') {
-    throw new TypeError('DSH Host Connection RPC is required');
+// ---------------------------------------------------------------------------
+// RPC channel transport
+//
+// DSH's `connection.rpc.handle(channel, ...)` mounts the route on the service's
+// *owner* context. That owner is resolved through cordis' shadow rule to the
+// context that provided Connection (`inject = ["credentials"]`), which has no
+// `webServer`, so `owner.webServer.register` throws
+// `cannot get property "webServer" without inject` and the channel never
+// mounts (every request falls through to the webserver fallback → HTTP 405).
+// Wrapping the call in `ctx.inject([...])` cannot fix that: the owner is not
+// the reading context.
+//
+// So the channel is mounted here, on the plugin's own webServer-injected
+// context, speaking the exact `client-connection` envelope
+// (`POST <channel>/<endpoint>` with a `client-request` body in and a
+// `server-response` body out) — the browser client needs no change.
+// ---------------------------------------------------------------------------
+
+const JSON_CONTENT_TYPE = 'application/json';
+const MAX_RPC_BODY_BYTES = 1_000_000;
+
+function sendJson(response, status, body) {
+  const text = JSON.stringify(body);
+  response.writeHead(status, {
+    'content-type': `${JSON_CONTENT_TYPE}; charset=utf-8`,
+    'content-length': Buffer.byteLength(text),
+    'cache-control': 'no-store',
+  });
+  response.end(text);
+}
+
+function rpcFailure(rpcId, code, message, details = {}) {
+  return {
+    type: 'server-response',
+    rpcId,
+    result: { ok: false, error: { code, message, details } },
+  };
+}
+
+/**
+ * The browser transport rejects a failed envelope whose `error.details` is not
+ * an object (`invalid server-response failure`), but most plugin branches omit
+ * it. Normalize so the real failure reaches the settings page.
+ */
+function normalizeRpcResult(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return { ok: true, value: result };
   }
-  return ctx.connection.rpc.handle(
-    WEIXIN_RPC_CHANNEL,
-    createWeixinRpcHandler(controller, options),
-    { authority: resolveRpcAuthority(authority) },
+  if (result.ok === false) {
+    const error = result.error && typeof result.error === 'object' ? result.error : {};
+    return {
+      ok: false,
+      error: {
+        code: typeof error.code === 'string' ? error.code : 'weixin-operation-failed',
+        message: typeof error.message === 'string' ? error.message : '微信操作失败，请稍后重试。',
+        details: error.details && typeof error.details === 'object' && !Array.isArray(error.details)
+          ? error.details
+          : {},
+      },
+    };
+  }
+  return result.ok === true ? result : { ok: true, value: result };
+}
+
+function weixinEndpoint(pathname) {
+  const prefix = `${WEIXIN_RPC_CHANNEL}/`;
+  if (!pathname.startsWith(prefix)) return undefined;
+  const endpoint = pathname.slice(prefix.length);
+  if (!endpoint || endpoint.includes('/') || endpoint === '.' || endpoint === '..') return undefined;
+  return endpoint;
+}
+
+async function readRequestBody(request) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > MAX_RPC_BODY_BYTES) throw new Error('request body is too large');
+    chunks.push(chunk);
+  }
+  const text = Buffer.concat(chunks).toString('utf8').trim();
+  return text ? JSON.parse(text) : undefined;
+}
+
+function createWeixinChannelRoute(connection, handler) {
+  return async (request, response) => {
+    // Same boundary DSH applies to its own /api transport: trusted host plus
+    // browser authentication, so LAN/domain access keeps working.
+    const rejection = typeof connection.requestRejection === 'function'
+      ? connection.requestRejection(request)
+      : undefined;
+    if (rejection !== undefined) {
+      response.writeHead(rejection);
+      response.end(rejection === 401 ? 'unauthorized' : 'forbidden');
+      return;
+    }
+
+    const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
+    const endpoint = weixinEndpoint(pathname);
+    if (request.method !== 'POST' || endpoint === undefined) {
+      response.writeHead(404);
+      response.end('not found');
+      return;
+    }
+
+    const contentType = String(request.headers['content-type'] ?? '')
+      .split(';', 1)[0].trim().toLowerCase();
+    if (contentType !== JSON_CONTENT_TYPE) {
+      response.writeHead(415);
+      response.end('content type must be application/json');
+      return;
+    }
+
+    let message;
+    try {
+      message = await readRequestBody(request);
+    } catch {
+      response.writeHead(400);
+      response.end('body is not JSON');
+      return;
+    }
+    if (typeof message?.rpcId !== 'string' || !message.rpcId) {
+      response.writeHead(400);
+      response.end('body is not a client request');
+      return;
+    }
+    if (message.type !== 'client-request' || message.method !== endpoint) {
+      sendJson(response, 200, rpcFailure(
+        message.rpcId,
+        'gateway/bad-request',
+        `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(endpoint)}`,
+      ));
+      return;
+    }
+
+    try {
+      const result = normalizeRpcResult(await handler(endpoint, message.payload));
+      sendJson(response, 200, { type: 'server-response', rpcId: message.rpcId, result });
+    } catch (error) {
+      sendJson(response, 200, rpcFailure(
+        message.rpcId,
+        'weixin-operation-failed',
+        error?.message ?? String(error),
+      ));
+    }
+  };
+}
+
+export function installWeixinRpc(ctx, controller, options, authority) {
+  // Validate the declared authority even though the effective gate is DSH's
+  // trusted-host + browser-auth fence applied per request above.
+  resolveRpcAuthority(authority);
+  if (!ctx?.connection || typeof ctx.connection.requestRejection !== 'function') {
+    throw new TypeError('DSH Host Connection service is required');
+  }
+  if (!ctx?.webServer || typeof ctx.webServer.register !== 'function') {
+    throw new TypeError('DSH Host webServer service is required to mount the weixin RPC channel');
+  }
+  return ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'prefix',
+      path: WEIXIN_RPC_CHANNEL,
+      handler: createWeixinChannelRoute(ctx.connection, createWeixinRpcHandler(controller, options)),
+    }),
+    `dsh-weixin: ${WEIXIN_RPC_CHANNEL} rpc channel`,
   );
 }
