@@ -37,7 +37,7 @@ export default {
   '{year}年{month}月{day}日': '{year}-{month}-{day}',
   '标题暂不可用': 'Title unavailable',
   '暂无标题': 'No title',
-  '（已归档）': '(archived)',
+  '已隐藏 {count} 个归档会话。': '{count} archived Session(s) hidden.',
   '工作区：{workspace}\n该工作区暂无会话。': 'Workspace: {workspace}\nThis Workspace has no Sessions yet.',
   '工作区：{workspace}': 'Workspace: {workspace}',
   '会话（{count}）：': 'Sessions ({count}):',
